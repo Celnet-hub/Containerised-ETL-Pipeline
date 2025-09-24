@@ -1,0 +1,13 @@
+- Create a simple python script:
+	- The script tests the connection to a PostgreSQL databases
+- Create containers blueprint the application
+	- Create a Dockerfile for the python script
+	- Create a Dockerfile in separate folder for the PostgreSQL DB
+	- Test communication
+- Update Python script to perform ETL.
+- Script a Bash script that orchestrate the workflow
+	- Create containers for python and PostgreSQL
+	- Create a Docker network for the applications and the PostgreSQL DB if it does not exist
+	- Execute the python container to perform ETL.
+- VC the project and push to git hub
+- submit the assignment.
