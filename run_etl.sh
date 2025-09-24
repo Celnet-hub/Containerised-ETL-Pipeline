@@ -46,7 +46,7 @@ build_images() {
     
     # Build PostgreSQL database image
     echo "Building PostgreSQL database image..."
-    cd db/
+    cd etl_database/
     docker build -t $DB_IMAGE_NAME .
     cd ../
     
@@ -114,7 +114,7 @@ main() {
     echo "Starting ETL Pipeline setup..."
     
     # Cleanup any existing resources
-    cleanup
+    # cleanup
     
     # Create Docker network
     create_network
@@ -148,8 +148,8 @@ main() {
     echo "To remove network: docker network rm $NETWORK_NAME"
 }
 
-# Handle script interruption
-trap cleanup EXIT
+# # Handle script interruption
+# trap cleanup EXIT
 
 # Run main function
 main

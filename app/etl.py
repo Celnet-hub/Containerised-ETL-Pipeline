@@ -3,7 +3,9 @@ import glob
 import pandas as pd
 import numpy as np
 from datetime import datetime
-import sqlite3
+import psycopg2
+import os
+from sqlalchemy import create_engine
 
 log_file = "log_file.txt"
 final_result = "transformed_internet_users_data.csv"
@@ -25,7 +27,7 @@ def extract_from_csv(csv_file):
 def extract():
     # create an empty dataframe to hold extracted data
     extracted_data = pd.DataFrame(columns=['Location', 'Rate (WB)', 'Year', 'Rate (ITU)', 'Year.1', 'Users (CIA)',
-       'Year.2', 'Notes'])
+                                           'Year.2', 'Notes'])
 
     # begin processing files
     for csvfile in glob.glob("*.csv"):
@@ -41,20 +43,14 @@ def extract():
 def transform(data):
     # data.columns = data.columns.str.lower()
 
-    # round year to whole number
-    year_list = data["Year"].tolist()
-    year_one_list = data["Year.1"].tolist()
-    year_two_list = data["Year.2"].tolist()
-
-
-    transformed_year = [np.floor(x) for x in year_list]
-    transformed_year_one = [np.floor(x) for x in year_one_list]
-    transformed_year_two = [np.floor(x) for x in year_two_list]
-
-
-    data["Year"] = transformed_year
-    data["Year.1"] = transformed_year_one
-    data["Year.2"] = transformed_year_two
+    # Convert year columns to integers (handle NaN values)
+    # Use pandas nullable integer type to properly handle NaN values
+    data["Year"] = data["Year"].apply(lambda x: int(
+        np.floor(x)) if pd.notna(x) else x).astype('Int64')
+    data["Year.1"] = data["Year.1"].apply(lambda x: int(
+        np.floor(x)) if pd.notna(x) else x).astype('Int64')
+    data["Year.2"] = data["Year.2"].apply(lambda x: int(
+        np.floor(x)) if pd.notna(x) else x).astype('Int64')
 
     data.index.name = "S/N"
     return data
@@ -62,14 +58,111 @@ def transform(data):
 
 ############### Load to CSV and to SQL #################
 
-def load_data(destination, transformed_data):
-    transformed_data.to_csv(destination)
+def connect_to_db():
+    # Get database connection parameters from environment variables
+    # These are passed by the Docker container via run_etl.sh
+    DB_HOST = os.getenv("DB_HOST", "localhost")
+    DB_NAME = os.getenv("DB_NAME", "app_db")
+    DB_USER = os.getenv("DB_USER", "admin")
+    DB_PASS = os.getenv("DB_PASSWORD", "admin123")
+    DB_PORT = os.getenv("DB_PORT", "5432")
 
-    #Load to SQL
-    conn = sqlite3.connect(db_name)
-    transformed_data.to_sql(table_name, conn, if_exists='replace', index=False) #index= Fasle prevents pandas from writing the dataframe index as column in the database's table
-    conn.close()
-    print("Loaded to sqlite table")
+    print(f"Attempting to connect to PostgreSQL at {DB_HOST}:{DB_PORT}")
+    print(f"Database: {DB_NAME}, User: {DB_USER}")
+
+    conn = None
+
+    try:
+        # --- Establish the connection ---
+        print("Connecting to the PostgreSQL database...")
+        conn = psycopg2.connect(
+            host=DB_HOST,
+            dbname=DB_NAME,
+            user=DB_USER,
+            password=DB_PASS,
+            port=DB_PORT
+        )
+        print("Connection successful!")
+        return conn
+
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(f"Error while connecting to PostgreSQL: {error}")
+        return None
+
+
+def load_data(destination, transformed_data):
+    # load to csv
+    transformed_data.to_csv(destination)
+    print(f"Data saved to CSV: {destination}")
+
+    # Load to PostgreSQL using connection from connect_to_db()
+    print("Loading data to PostgreSQL...")
+
+    conn = connect_to_db()
+    if conn is None:
+        print("Failed to connect to database. Skipping PostgreSQL load.")
+        return
+
+    try:
+        cur = conn.cursor()
+
+        # Create table if it doesn't exist
+        create_table_query = f"""
+        CREATE TABLE IF NOT EXISTS {table_name} (
+            id SERIAL PRIMARY KEY,
+            location VARCHAR(255),
+            rate_wb FLOAT,
+            year_wb INTEGER,
+            rate_itu FLOAT,
+            year_itu INTEGER,
+            users_cia BIGINT,
+            year_cia INTEGER,
+            notes TEXT
+        );
+        """
+        cur.execute(create_table_query)
+        print(f"Table '{table_name}' created or already exists")
+
+        # Clear existing data
+        cur.execute(f"DELETE FROM {table_name};")
+        print("Cleared existing data from table")
+
+        # Insert data using executemany for better performance
+        insert_query = f"""
+        INSERT INTO {table_name} (location, rate_wb, year_wb, rate_itu, year_itu, users_cia, year_cia, notes)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s);
+        """
+
+        # Prepare data for bulk insert
+        data_to_insert = []
+        for index, row in transformed_data.iterrows():
+            data_to_insert.append((
+                row['Location'],
+                row['Rate (WB)'] if pd.notna(row['Rate (WB)']) else None,
+                row['Year'] if pd.notna(row['Year']) else None,
+                row['Rate (ITU)'] if pd.notna(row['Rate (ITU)']) else None,
+                row['Year.1'] if pd.notna(row['Year.1']) else None,
+                row['Users (CIA)'] if pd.notna(row['Users (CIA)']) else None,
+                row['Year.2'] if pd.notna(row['Year.2']) else None,
+                row['Notes'] if pd.notna(row['Notes']) else None
+            ))
+
+        # Use executemany for bulk insert
+        cur.executemany(insert_query, data_to_insert)
+
+        conn.commit()
+        cur.close()
+        print(
+            f"Successfully loaded {len(data_to_insert)} rows to PostgreSQL table '{table_name}'")
+
+    except (Exception, psycopg2.DatabaseError) as error:
+        print(f"Error loading data to PostgreSQL: {error}")
+        if conn:
+            conn.rollback()
+    finally:
+        if conn:
+            conn.close()
+            print("Database connection closed")
 
 
 def log_progress(msg):
@@ -81,22 +174,26 @@ def log_progress(msg):
         logs.write(timestamp + "," + msg + "\n")
 
 
-
-
 ######## Begin ETL ###########
 log_progress("Beginning ETL process")
+
+# Test database connection first
+print("Testing database connection...")
+connect_to_db()
+
+# Extract data
+log_progress("Extract phase started")
 extracted_data = extract()
+log_progress("Extract completed")
 
-log_progress("Extract completed \n")
-log_progress("Beginning transformation \n")
-
+# Transform data
+log_progress("Beginning transformation")
 transformed_data = transform(extracted_data)
+log_progress("Transformation completed")
 
-
-log_progress("Transformation completed \n")
-log_progress("Beginning Load \n")
-
+# Load data
+log_progress("Beginning Load")
 load_data(final_result, transformed_data)
+log_progress("Data loaded to CSV and PostgreSQL")
 
-log_progress("Data loaded to csv file")
-
+print("ETL process completed successfully!")

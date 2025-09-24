@@ -1,4 +1,4 @@
 *.csv
 venv
 *.db
-*.txt
+log_file.txt
