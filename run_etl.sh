@@ -113,7 +113,7 @@ show_logs() {
 main() {
     echo "Starting ETL Pipeline setup..."
     
-    # Cleanup any existing resources
+    # Cleanup any existing resources (Optional)
     # cleanup
     
     # Create Docker network
